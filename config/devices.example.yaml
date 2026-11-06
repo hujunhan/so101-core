@@ -1,0 +1,9 @@
+# Copy to config/devices.yaml (git-ignored) and fill in your own paths.
+# Use stable /dev/serial/by-id and /dev/v4l/by-id paths: ttyACM*/video* numbers change between plugs.
+follower_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_<FOLLOWER_SERIAL>-if00
+leader_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_<LEADER_SERIAL>-if00
+robot_id: so101    # LeRobot calibration: ~/.cache/huggingface/lerobot/calibration/robots/so_follower/<robot_id>.json
+teleop_id: so101   # LeRobot calibration: .../teleoperators/so_leader/<teleop_id>.json
+cameras:
+  wrist: /dev/v4l/by-id/usb-<WRIST_CAMERA>-video-index0
+  zed: /dev/v4l/by-id/usb-Technologies__Inc._ZED_2-video-index0

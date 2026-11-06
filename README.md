@@ -9,7 +9,8 @@ Each project lives in its own repo. This repo holds what they all share
 (hardware access, safety layer, conventions, digital twin) and the plan that
 ties them together.
 
-> **Status (2026-11-06):** planning done; M0 not started.
+> **Status (2026-11-06):** M0 in progress: package, safety layer, MuJoCo twin and tools written and
+> tested without hardware; first run on the real arm pending.
 
 ## Setup
 
@@ -42,6 +43,27 @@ M0 so101-core ─→ M1 so101-kinematics ─→ M2 so101-calib ─┐
 - M5 reuses everything before it.
 
 **Out of scope for this hardware:** force / impedance control (the servos are position-controlled), dexterous hands, high-rate real-time control.
+
+## M0: using this package
+
+```bash
+uv sync --extra hw                      # LeRobot pinned; drop `--extra hw` for sim-only use
+cp config/devices.example.yaml config/devices.yaml   # then fill in your by-id paths
+uv run so101-check                      # read-only: devices, calibration, joint table (never moves)
+uv run so101-twin --source sim          # viewer only, no hardware
+uv run so101-twin --source follower     # live twin; torque off, move the arm by hand
+uv run so101-jointcheck                 # verify signs, record rest pose, then a powered +5 deg check
+uv run pytest                           # hardware-free tests (fake servo bus)
+```
+
+| Module | Role |
+|---|---|
+| `model` | Joint names, URDF/MJCF paths (vendored from SO-ARM100, Apache-2.0), joint limits |
+| `config` | `DeviceConfig` (git-ignored `config/devices.yaml`) and `JointMap` (per-joint sign, offset, rest pose) |
+| `convert` | The only place LeRobot degrees / gripper % meet radians |
+| `safety` | Clip to URDF limits minus a margin, cap the step per command; never pushes further out from outside the range |
+| `arm` | `SafeArm`: sets goal = present before enabling torque, refuses to auto-calibrate, detects stalls from following error, holds then asks before releasing torque on Ctrl-C |
+| `twin` | Kinematic MuJoCo twin and viewer |
 
 ## Shared conventions (decided once, used by every repo)
 

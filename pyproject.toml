@@ -1,0 +1,47 @@
+[project]
+name = "so101-core"
+version = "0.1.0"
+description = "Shared foundation for SO-101 arm projects: safe hardware access, conventions, MuJoCo twin"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Junhan Hu" }]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "mujoco>=3.2",
+]
+
+[project.optional-dependencies]
+# Real hardware. LeRobot is pinned to one commit for every repo in the series.
+hw = [
+    "lerobot[feetech] @ git+https://github.com/huggingface/lerobot@f5c9bc02137c331b009eccd44ece6f11b62187a8",
+]
+
+[project.scripts]
+so101-check = "so101_core.tools.check:main"
+so101-twin = "so101_core.tools.twin:main"
+so101-jointcheck = "so101_core.tools.jointcheck:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/so101_core"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

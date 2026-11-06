@@ -5,3 +5,6 @@ __pycache__/
 outputs/
 wandb/
 *.rrd
+
+# machine-specific device paths (adapter serials)
+config/devices.yaml

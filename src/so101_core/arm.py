@@ -1,0 +1,197 @@
+"""Safe access to the real SO-101 follower arm.
+
+Differences from calling LeRobot's `SOFollower` directly:
+- `connect()` writes Goal_Position = Present_Position *before* torque is enabled, so the arm
+  cannot jump to a stale goal on power-up (LeRobot's `connect()` enables torque without this).
+- It never runs LeRobot calibration: a missing or mismatched calibration is an error.
+- Every command goes through `SafetyLayer` (joint-limit clipping and a per-command step cap).
+- `move_to()` watches the following error. If the measured position lags the command by more
+  than `stall_rad` for longer than `stall_s`, the arm is probably blocked (table, object or
+  itself). It then holds the current position and raises `StallError` instead of pushing on.
+- On any exception, including Ctrl-C, the context manager holds the current position, then
+  releases torque only after the user confirms the arm is supported.
+"""
+
+import time
+from collections.abc import Callable
+
+import numpy as np
+
+from so101_core.config import DeviceConfig, JointMap
+from so101_core.convert import lerobot_to_rad, rad_to_lerobot
+from so101_core.model import JOINTS
+from so101_core.safety import SafetyConfig, SafetyLayer
+
+
+class StallError(RuntimeError):
+    pass
+
+
+class Rate:
+    def __init__(self, hz: float):
+        self.dt = 1.0 / hz
+        self.next = time.perf_counter()
+
+    def sleep(self) -> None:
+        self.next += self.dt
+        delay = self.next - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        else:  # fell behind; don't try to catch up with a burst
+            self.next = time.perf_counter()
+
+
+def _confirm_release() -> None:
+    try:
+        input("\n>>> Support the arm with your hand, then press Enter to release torque... ")
+    except EOFError:
+        pass
+
+
+class SafeArm:
+    def __init__(
+        self,
+        devices: DeviceConfig | None = None,
+        safety: SafetyConfig | None = None,
+        joint_map: JointMap | None = None,
+        robot=None,  # injected for tests; otherwise built from `devices` on connect()
+        confirm_release: Callable[[], None] = _confirm_release,
+    ):
+        self.devices = devices
+        self.safety = SafetyLayer(safety)
+        self.jm = joint_map or JointMap.load()
+        self.robot = robot
+        self.confirm_release = confirm_release
+        self.torque = False
+        self.q_cmd: np.ndarray | None = None  # last commanded position (rad)
+
+    # -- connection -------------------------------------------------------------------------
+    def _build_robot(self):
+        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+
+        cfg = SO101FollowerConfig(port=self.devices.follower_port, id=self.devices.robot_id)
+        return SO101Follower(cfg)
+
+    def connect(self, torque: bool) -> "SafeArm":
+        """Connect. `torque=False` leaves the arm limp (to move it by hand)."""
+        if self.robot is None:
+            self.robot = self._build_robot()
+        bus = self.robot.bus
+        bus.connect()
+        if not bus.is_calibrated:
+            bus.disconnect(disable_torque=False)
+            raise RuntimeError(
+                "Motor calibration does not match the LeRobot calibration file. "
+                "Recalibrate with LeRobot/LeLab first; so101-core never calibrates on its own."
+            )
+        if torque:
+            self._sync_goal_to_present()
+            self.robot.configure()  # writes PID and protection settings, then enables torque
+            self._sync_goal_to_present()
+            self.torque = True
+            self.q_cmd = self.read()
+        else:
+            bus.disable_torque()
+            self.torque = False
+        return self
+
+    def _sync_goal_to_present(self) -> None:
+        bus = self.robot.bus
+        present = bus.sync_read("Present_Position", normalize=False, num_retry=3)
+        bus.sync_write("Goal_Position", present, normalize=False)
+
+    def release(self, confirm: bool = True) -> None:
+        """Disable torque. The arm goes limp, so by default ask the user to support it first."""
+        if self.robot is None or not self.torque:
+            return
+        if confirm:
+            self.confirm_release()
+        self.robot.bus.disable_torque()
+        self.torque = False
+
+    def disconnect(self) -> None:
+        if self.robot is not None and self.robot.bus.is_connected:
+            self.release()
+            self.robot.bus.disconnect(disable_torque=False)
+
+    def __enter__(self) -> "SafeArm":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is not None and self.torque:
+            try:
+                self.hold()
+                print(f"\n[so101-core] {exc_type.__name__}: holding current position.")
+            except Exception as e:  # bus may be gone; nothing more we can do safely
+                print(f"[so101-core] could not hold position: {e}")
+        self.disconnect()
+
+    # -- state and commands -----------------------------------------------------------------
+    def read(self) -> np.ndarray:
+        """Measured joint positions (rad), ordered as JOINTS."""
+        return lerobot_to_rad(self.robot.bus.sync_read("Present_Position", num_retry=3), self.jm)
+
+    def hold(self) -> np.ndarray:
+        q = self.read()
+        self._send(q)
+        self.q_cmd = q
+        return q
+
+    def _send(self, q: np.ndarray) -> None:
+        action = rad_to_lerobot(q, self.jm)
+        self.robot.bus.sync_write("Goal_Position", {k.removesuffix(".pos"): v for k, v in action.items()})
+
+    def command(self, q_target: np.ndarray) -> np.ndarray:
+        """Send one safety-filtered command. Call at `safety.cfg.rate_hz`. Returns what was sent."""
+        if not self.torque:
+            raise RuntimeError("torque is off; connect(torque=True) first")
+        res = self.safety.filter(q_target, self.q_cmd)
+        self._send(res.q)
+        self.q_cmd = res.q
+        return res.q
+
+    def move_to(
+        self,
+        q_goal: np.ndarray,
+        speed_rad_s: float = np.deg2rad(20.0),
+        tol_rad: float = np.deg2rad(2.0),
+        timeout_s: float = 15.0,
+        stall_rad: float = np.deg2rad(15.0),
+        stall_s: float = 0.5,
+        on_tick: Callable[[np.ndarray, np.ndarray], None] | None = None,
+    ) -> np.ndarray:
+        """Ramp to `q_goal` at `speed_rad_s` (capped by the safety layer). Returns final measured q.
+
+        `on_tick(q_measured, q_commanded)` is called every cycle (e.g. to update the twin).
+        """
+        if not self.torque:
+            raise RuntimeError("torque is off; connect(torque=True) first")
+        hz = self.safety.cfg.rate_hz
+        step = min(speed_rad_s / hz, self.safety.cfg.max_step_rad)
+        goal, _ = self.safety.clip(np.asarray(q_goal, dtype=float))
+        rate = Rate(hz)
+        t0 = time.perf_counter()
+        lag_since = None
+        while True:
+            delta = np.clip(goal - self.q_cmd, -step, step)
+            self.command(self.q_cmd + delta)
+            q = self.read()
+            if on_tick:
+                on_tick(q, self.q_cmd)
+            now = time.perf_counter()
+            if np.max(np.abs(q - self.q_cmd)) > stall_rad:
+                lag_since = lag_since or now
+                if now - lag_since > stall_s:
+                    worst = JOINTS[int(np.argmax(np.abs(q - self.q_cmd)))]  # before hold() resets q_cmd
+                    self.hold()
+                    raise StallError(f"{worst} is not following the command: blocked? Holding position.")
+            else:
+                lag_since = None
+            if np.allclose(self.q_cmd, goal) and np.max(np.abs(q - goal)) < tol_rad:
+                return q
+            if now - t0 > timeout_s:
+                if np.allclose(self.q_cmd, goal):
+                    return q  # commanded fully; residual error is reported by the caller
+                self.hold()
+                raise TimeoutError("move_to did not finish in time; holding position")
+            rate.sleep()
