@@ -97,17 +97,26 @@ def phase_b(arm: SafeArm, twin: Twin, log: dict) -> None:
     for i in (1, 2):  # rest is near the ends of these ranges; mid-range (0) is always inward
         lifted[i] -= np.sign(start[i]) * min(np.deg2rad(20), abs(start[i]))
     arm.move_to(lifted, on_tick=tick)
-    base = arm.read()
+    # Baseline = what we commanded, not what we measured: commanding the measured (sagged) pose
+    # would make the arm sag again by the same amount, and so on.
+    base = arm.q_cmd.copy()
     for i, j in enumerate(JOINTS):
         delta = np.deg2rad(10 if j == "gripper" else 5)
         input(f"\n  {j}: press Enter to move +{np.rad2deg(delta):.0f} deg and back... ")
         target = base.copy()
         target[i] += delta
+        t0 = time.perf_counter()
         q = arm.move_to(target, speed_rad_s=np.deg2rad(10), on_tick=tick)
+        dt = time.perf_counter() - t0
         err = np.rad2deg(q[i] - target[i])
+        print(f"    settled in {dt:.1f} s; measured - commanded: {err:+.2f} deg")
         a = ask(f"  {j}: did the real joint and the twin move the same way?")
         arm.move_to(base, speed_rad_s=np.deg2rad(10), on_tick=tick)
-        log["phase_b"][j] = {"agree": a, "final_error_deg": round(float(err), 2)}
+        log["phase_b"][j] = {
+            "agree": a,
+            "residual_deg": round(float(err), 2),  # measured - commanded after settling
+            "move_s": round(dt, 2),
+        }
         if a == "n":
             raise SystemExit(f"{j}: command path disagrees with the twin. Stopping (holding position).")
     if ask("\n  Optional: move to the ZERO pose (middle of every range) to compare with the twin?") == "y":

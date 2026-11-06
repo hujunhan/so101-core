@@ -73,8 +73,9 @@ def test_safety_rejects_nan():
 class FakeBus:
     """Simulates the servos: the position follows the goal with a first-order lag."""
 
-    def __init__(self, jm, blocked_joint=None):
+    def __init__(self, jm, blocked_joint=None, sag=None):
         self.jm = jm
+        self.sag = np.zeros(len(JOINTS)) if sag is None else sag  # steady-state error under gravity
         self.q = np.zeros(len(JOINTS))
         self.goal = self.q.copy()
         self.blocked = blocked_joint
@@ -98,7 +99,7 @@ class FakeBus:
     def sync_read(self, name, normalize=True, num_retry=0):
         assert name == "Present_Position"
         if self.torque:
-            step = 0.5 * (self.goal - self.q)
+            step = 0.5 * (self.goal - self.sag - self.q)
             if self.blocked is not None:
                 step[self.blocked] = 0.0
             self.q = self.q + step
@@ -120,9 +121,9 @@ class FakeRobot:
         self.bus.enable_torque()
 
 
-def make_arm(blocked=None):
+def make_arm(blocked=None, sag=None):
     jm = JointMap()
-    bus = FakeBus(jm, blocked)
+    bus = FakeBus(jm, blocked, sag)
     cfg = SafetyConfig(rate_hz=1000.0)  # run fast in tests
     arm = SafeArm(safety=cfg, joint_map=jm, robot=FakeRobot(bus), confirm_release=lambda: None)
     return arm, bus
@@ -154,3 +155,18 @@ def test_exception_holds_then_releases():
         arm.command(np.deg2rad([1, 1, 1, 1, 1, 1]))
         raise KeyboardInterrupt
     assert not bus.torque and not bus.is_connected
+
+
+def test_move_to_returns_promptly_despite_gravity_sag():
+    """Regression: with a steady-state error > tolerance, move_to used to wait for the timeout."""
+    import time
+
+    sag = np.zeros(len(JOINTS))
+    sag[2] = np.deg2rad(3.0)  # elbow sags 3 deg, like the real arm at the zero pose
+    arm, bus = make_arm(sag=sag)
+    arm.connect(torque=True)
+    goal = np.deg2rad([0, 0, 30, 0, 0, 0])
+    t0 = time.perf_counter()
+    q = arm.move_to(goal, speed_rad_s=np.deg2rad(2000), settle_s=0.02, settle_timeout_s=5.0)
+    assert time.perf_counter() - t0 < 1.0
+    assert np.rad2deg(goal[2] - q[2]) == pytest.approx(3.0, abs=0.2)  # the residual is reported, not hidden

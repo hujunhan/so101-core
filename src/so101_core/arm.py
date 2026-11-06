@@ -154,13 +154,21 @@ class SafeArm:
         self,
         q_goal: np.ndarray,
         speed_rad_s: float = np.deg2rad(20.0),
-        tol_rad: float = np.deg2rad(2.0),
         timeout_s: float = 15.0,
+        settle_rad: float = np.deg2rad(0.3),
+        settle_s: float = 0.2,
+        settle_timeout_s: float = 2.0,
         stall_rad: float = np.deg2rad(15.0),
         stall_s: float = 0.5,
         on_tick: Callable[[np.ndarray, np.ndarray], None] | None = None,
     ) -> np.ndarray:
-        """Ramp to `q_goal` at `speed_rad_s` (capped by the safety layer). Returns final measured q.
+        """Ramp the command to `q_goal` at `speed_rad_s` (capped by the safety layer), then wait
+        for the arm to settle. Returns the settled measured q.
+
+        "Settled" means no joint moved more than `settle_rad` over `settle_s`; it does not mean
+        "at the goal". Position-controlled servos under gravity keep a steady-state error (sag),
+        so waiting for |q - goal| < tol can wait forever. Callers measure the residual
+        (q - goal) themselves. `settle_timeout_s` caps the wait after the ramp ends.
 
         `on_tick(q_measured, q_commanded)` is called every cycle (e.g. to update the twin).
         """
@@ -172,6 +180,8 @@ class SafeArm:
         rate = Rate(hz)
         t0 = time.perf_counter()
         lag_since = None
+        ramp_done_at = None
+        history: list[tuple[float, np.ndarray]] = []
         while True:
             delta = np.clip(goal - self.q_cmd, -step, step)
             self.command(self.q_cmd + delta)
@@ -187,11 +197,18 @@ class SafeArm:
                     raise StallError(f"{worst} is not following the command: blocked? Holding position.")
             else:
                 lag_since = None
-            if np.allclose(self.q_cmd, goal) and np.max(np.abs(q - goal)) < tol_rad:
-                return q
-            if now - t0 > timeout_s:
-                if np.allclose(self.q_cmd, goal):
-                    return q  # commanded fully; residual error is reported by the caller
+            if np.allclose(self.q_cmd, goal):
+                ramp_done_at = ramp_done_at or now
+                history.append((now, q))
+                while history and now - history[0][0] > settle_s:
+                    history.pop(0)
+                window = np.array([h[1] for h in history])
+                spread = np.max(np.ptp(window, axis=0)) if len(history) > 1 else np.inf
+                if now - ramp_done_at >= settle_s and spread < settle_rad:
+                    return q
+                if now - ramp_done_at > settle_timeout_s:
+                    return q  # still creeping; the caller sees the residual
+            elif now - t0 > timeout_s:
                 self.hold()
-                raise TimeoutError("move_to did not finish in time; holding position")
+                raise TimeoutError("move_to could not finish the ramp in time; holding position")
             rate.sleep()
