@@ -275,11 +275,11 @@ from so101_core.twin import Twin
 
 twin = Twin().open_viewer()
 with SafeArm(DeviceConfig.load()).connect(torque=True) as arm:
-    q0 = arm.read()                       # rad, ordered as so101_core.JOINTS
+    q0 = arm.read()  # rad, ordered as so101_core.JOINTS
     target = q0 + np.deg2rad([10, 0, 0, 0, 0, 0])
     q = arm.move_to(target, on_tick=lambda q, q_cmd: twin.show(q))
     print("residual [deg]:", np.rad2deg(q - target))
-    arm.move_to(arm.jm.rest)              # park; release asks for confirmation on exit
+    arm.move_to(arm.jm.rest)  # park; release asks for confirmation on exit
 ```
 
 ## 9. Known limits and open items
