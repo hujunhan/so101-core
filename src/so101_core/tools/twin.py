@@ -17,7 +17,12 @@ from so101_core.model import JOINTS, urdf_limits
 from so101_core.twin import Twin
 
 
-def open_bus(source: str, dev: DeviceConfig):
+def open_device(source: str, dev: DeviceConfig):
+    """Connect the arm's bus and return the LeRobot device object.
+
+    Return (and keep) the device, not just its bus: LeRobot's Robot/Teleoperator `__del__`
+    disconnects the bus when the object is garbage-collected.
+    """
     if source == "follower":
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
@@ -31,7 +36,7 @@ def open_bus(source: str, dev: DeviceConfig):
     if not bus.is_calibrated:
         bus.disconnect(disable_torque=False)
         raise RuntimeError(f"{source}: motor calibration does not match the LeRobot file")
-    return bus
+    return dev_obj
 
 
 def main() -> None:
@@ -51,7 +56,8 @@ def main() -> None:
 
     dev = DeviceConfig.load()
     jm = JointMap.load() if args.source == "follower" else JointMap()
-    bus = open_bus(args.source, dev)
+    device = open_device(args.source, dev)
+    bus = device.bus
     try:
         if args.source == "follower":
             if any(bus.sync_read("Torque_Enable", normalize=False).values()):
