@@ -9,8 +9,8 @@ Each project lives in its own repo. This repo holds what they all share
 (hardware access, safety layer, conventions, digital twin) and the plan that
 ties them together.
 
-> **Status (2026-11-06):** M0 in progress: package, safety layer, MuJoCo twin and tools written and
-> tested without hardware; first run on the real arm pending.
+> **Status (2026-11-06):** M0 working on the real arm: read-only check, live twin and joint check
+> passed (joint map verified). Design notes: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Setup
 
@@ -64,6 +64,50 @@ uv run pytest                           # hardware-free tests (fake servo bus)
 | `safety` | Clip to URDF limits minus a margin, cap the step per command; never pushes further out from outside the range |
 | `arm` | `SafeArm`: sets goal = present before enabling torque, refuses to auto-calibrate, detects stalls from following error, holds then asks before releasing torque on Ctrl-C |
 | `twin` | Kinematic MuJoCo twin and viewer |
+
+Architecture, data flow and the reasons behind each choice: [docs/DESIGN.md](docs/DESIGN.md).
+
+## M0 findings (2026-11-06)
+
+Bugs found and fixed, and what the first runs on the real arm showed.
+
+**Pitfalls in LeRobot (pinned commit `f5c9bc0`) that the safety layer works around**
+- **`connect()` enables torque without syncing the goal.** `SOFollower.connect()` runs `configure()` inside
+  `torque_disabled()`, which re-enables torque on exit. Goal_Position is not set to Present_Position first,
+  so a stale goal left in the servos would make the arm jump at power-up. `SafeArm.connect()` writes
+  goal = present before and after `configure()`.
+- **Garbage collection disconnects the bus.** `Robot.__del__` and `Teleoperator.__del__` disconnect when the
+  object is collected. The follower then also disables torque, by default. The first `so101-twin` kept only
+  `device.bus`, lost the device object, and failed with `DeviceNotConnectedError`. Keep the device object
+  alive for as long as the bus is used.
+
+**Bugs in my own code**
+- **Moves waited for the timeout.** `move_to` returned only when *every* joint was within 2° of the goal.
+  Position-controlled servos under gravity keep a steady-state error (sag). The joint check also used the
+  *measured* pose as its baseline, so re-commanding it made the arm sag again. Each move therefore sat until
+  the 15 s timeout. Fix: finish when the arm has **settled** (no joint moves more than 0.3° in 0.2 s) and
+  report the residual instead of hiding it; use the **commanded** pose as the baseline. A regression test
+  with a sagging fake servo checks this: the old code took 3.00 s, the timeout, and the new code takes 0.22 s.
+- **The stall error named the wrong joint.** `hold()` resets the command before the lagging joint was
+  identified. The fake-bus test caught it before any run on hardware.
+
+**Measurements on this arm**
+- **Joint mapping is the identity.** All six signs are +1 and all offsets 0. LeRobot's `DEGREES` zero
+  (the middle of the range recorded at calibration) and the model's "new calibration" zero (the middle of
+  the joint range) agree. For example, shoulder_pan has range 734–3228, so its middle is 1981, and a reading
+  of 1957 ticks is −2.1°, matching the model.
+- **Residual at the zero pose** (measured − commanded):
+  - shoulder_pan 0.35°, shoulder_lift 0.31°, wrist_flex 0.79°, wrist_roll −0.26°;
+  - **elbow_flex 2.64°**.
+
+  Hypothesis: gravity sag. The forearm is horizontal at that pose, and LeRobot lowers the servo P gain
+  from 32 to 16. To be measured properly in M1/M2 (system identification).
+- **The rest pose is outside the safe range.** wrist_flex reads 95.7° at rest, beyond the URDF limit of 95°.
+  The safety layer therefore lets a joint that starts outside the range stay put or move inward, but never
+  further out, instead of forcing a jump into range on the first command.
+- **Supply voltage:** the servos report 11.8 V (the 12 V STS3215 variant). Temperatures were 25–26 °C at idle.
+- **Troubleshooting:** if every motor ID is "missing" but the serial port opens, the arm's power supply is
+  unplugged. The USB adapter is powered over USB; the servos are not.
 
 ## Shared conventions (decided once, used by every repo)
 
