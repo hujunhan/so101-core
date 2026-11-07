@@ -245,3 +245,16 @@ def test_follow_dense_reads_between_commands_without_changing_the_commands():
     assert np.all(res.t_sent < res.t)  # each command goes out before its first read
     assert res.t_dense[-1] < res.t_sent[-1] + 2 / arm.safety.cfg.rate_hz  # reads stop with the last tick
     assert arm.follow(path[-1:]).t_dense is None  # off by default
+
+
+def test_position_p_reaches_the_lerobot_config(monkeypatch):
+    lerobot = pytest.importorskip("lerobot.robots.so_follower")
+    seen = {}
+    monkeypatch.setattr(lerobot, "SO101Follower", lambda cfg: seen.update(cfg=cfg))
+    from so101_core.config import DeviceConfig
+
+    devices = DeviceConfig(follower_port="/dev/null", leader_port="/dev/null", robot_id="x", teleop_id="x")
+    SafeArm(devices, joint_map=JointMap(), position_p=32)._build_robot()
+    assert seen["cfg"].position_p_coefficient == 32
+    SafeArm(devices, joint_map=JointMap())._build_robot()
+    assert seen["cfg"].position_p_coefficient == 16  # LeRobot's default is kept

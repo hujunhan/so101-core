@@ -73,12 +73,15 @@ class SafeArm:
         joint_map: JointMap | None = None,
         robot=None,  # injected for tests; otherwise built from `devices` on connect()
         confirm_release: Callable[[], None] = _confirm_release,
+        position_p: int
+        | None = None,  # servo position gain; None keeps LeRobot's (16; the factory value is 32)
     ):
         self.devices = devices
         self.safety = SafetyLayer(safety)
         self.jm = joint_map or JointMap.load()
         self.robot = robot
         self.confirm_release = confirm_release
+        self.position_p = position_p
         self.torque = False
         self.q_cmd: np.ndarray | None = None  # last commanded position (rad)
         self.last_filter = (
@@ -89,7 +92,8 @@ class SafeArm:
     def _build_robot(self):
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
-        cfg = SO101FollowerConfig(port=self.devices.follower_port, id=self.devices.robot_id)
+        gains = {} if self.position_p is None else {"position_p_coefficient": int(self.position_p)}
+        cfg = SO101FollowerConfig(port=self.devices.follower_port, id=self.devices.robot_id, **gains)
         return SO101Follower(cfg)
 
     def connect(self, torque: bool) -> "SafeArm":
