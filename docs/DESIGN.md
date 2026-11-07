@@ -230,7 +230,7 @@ Importance: **★★★** load-bearing (a bug here can hurt hardware or corrupt 
 
 | File | Lines | Importance | What it does | Uses | Used by |
 |---|---:|:-:|---|---|---|
-| `arm.py` | 214 | ★★★ | `SafeArm`: safe connect, read, `command`, `move_to` (ramp, settle, stall), `follow` (a trajectory at the safety rate with stall watch and a log of commanded vs measured), `hold`, `release` with confirmation, context manager. Also `Rate` (fixed-rate loop) and `StallError` | `config`, `convert`, `model`, `safety`; LeRobot (lazy) | `tools/jointcheck`, `tools/twin` (`Rate`), tests; all later repos |
+| `arm.py` | 214 | ★★★ | `SafeArm`: safe connect, read, `command`, `move_to` (ramp, settle, stall), `follow` (a trajectory at the safety rate with stall watch and a log of commanded vs measured; `dense=True` also reads between commands, for system identification), `hold`, `release` with confirmation, context manager. Also `Rate` (fixed-rate loop) and `StallError` | `config`, `convert`, `model`, `safety`; LeRobot (lazy) | `tools/jointcheck`, `tools/twin` (`Rate`), tests; all later repos |
 | `safety.py` | 61 | ★★★ | `SafetyConfig` (margin, step, rate) and `SafetyLayer.filter`: NaN check, limit clip with inward-only rule, step cap | `model` | `arm`, tests |
 | `convert.py` | 40 | ★★★ | The only unit boundary: `lerobot_to_rad`, `rad_to_lerobot` (arm joints and gripper) | `config`, `model` | `arm`, `tools/check`, `tools/twin`, tests |
 | `config.py` | 88 | ★★ | `DeviceConfig` (ports, calibration IDs, camera paths) and `JointMap` (sign, offset, rest pose, verified date; load/save YAML); `config_dir()` lookup | `model` | `arm`, `convert`, all tools, tests |

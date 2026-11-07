@@ -37,6 +37,11 @@ class FollowResult:
     q_meas: np.ndarray  # (n, 6) measured right after each command
     clipped: int  # commands where the filter clipped a target to the limits
     step_limited: int  # commands where the filter capped the step (the arm lags the path)
+    t_sent: np.ndarray | None = None  # (n,) seconds since t0, just before each command was written
+    # With dense=True: every read, including the extra ones between commands. t_dense is the midpoint
+    # of each read (a read takes about 1 ms on the real bus), q_dense the measured q.
+    t_dense: np.ndarray | None = None  # (m,)
+    q_dense: np.ndarray | None = None  # (m, 6)
 
 
 class Rate:
@@ -235,6 +240,7 @@ class SafeArm:
         stall_rad: float = np.deg2rad(5.0),
         stall_s: float = 0.3,
         on_tick: Callable[[int, np.ndarray, np.ndarray], None] | None = None,
+        dense: bool = False,
     ) -> FollowResult:
         """Send one command per row of `q_path` at the safety rate, reading the arm after each.
 
@@ -248,6 +254,10 @@ class SafeArm:
         `q_path` must start within one step cap of the current command (`move_to` its first row first);
         otherwise the first commands would silently change the start of the path.
         `on_tick(i, q_measured, q_commanded)` is called every cycle, e.g. to log.
+
+        `dense=True` also reads the arm repeatedly between commands, until the next command is due, and
+        returns every read with its time (`t_dense`, `q_dense`), for system identification at a finer time
+        resolution than the command rate. The commands, the safety filter and the stall watch are the same.
         """
         if not self.torque:
             raise RuntimeError("torque is off; connect(torque=True) first")
@@ -260,18 +270,33 @@ class SafeArm:
             )
         rate = Rate(self.safety.cfg.rate_hz)
         t0 = time.perf_counter()
-        t, cmd, meas = [], [], []
+        t, t_sent, cmd, meas = [], [], [], []
+        t_dense, q_dense = [], []
+        read_s = 0.0  # longest recent read, to stop dense reads before the next command is due
         clipped = step_limited = 0
         lag_since = None
         for i, q_target in enumerate(q_path):
+            t_sent.append(time.perf_counter() - t0)
             q_sent = self.command(q_target)
             clipped += bool(self.last_filter.clipped.any())
             step_limited += bool(self.last_filter.step_limited.any())
+            before = time.perf_counter()
             q = self.read()
             now = time.perf_counter()
             t.append(now - t0)
             cmd.append(q_sent)
             meas.append(q)
+            if dense:
+                read_s = max(0.9 * read_s, now - before)
+                t_dense.append((before + now) / 2 - t0)
+                q_dense.append(q)
+                due = rate.next + rate.dt  # when rate.sleep() will send the next command
+                while time.perf_counter() + 2 * read_s < due:
+                    before = time.perf_counter()
+                    q_dense.append(self.read())
+                    after = time.perf_counter()
+                    t_dense.append((before + after) / 2 - t0)
+                    read_s = max(0.9 * read_s, after - before)
             if on_tick:
                 on_tick(i, q, q_sent)
             if np.max(np.abs(q - q_sent)) > stall_rad:
@@ -285,4 +310,13 @@ class SafeArm:
             else:
                 lag_since = None
             rate.sleep()
-        return FollowResult(np.array(t), np.array(cmd), np.array(meas), clipped, step_limited)
+        return FollowResult(
+            np.array(t),
+            np.array(cmd),
+            np.array(meas),
+            clipped,
+            step_limited,
+            t_sent=np.array(t_sent),
+            t_dense=np.array(t_dense) if dense else None,
+            q_dense=np.array(q_dense) if dense else None,
+        )

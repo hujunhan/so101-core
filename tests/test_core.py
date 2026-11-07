@@ -231,3 +231,17 @@ def test_follow_refuses_a_path_that_starts_far_from_the_current_command():
         arm.follow(_line(np.deg2rad([20, 0, 0, 0, 0, 0]), np.deg2rad([30, 0, 0, 0, 0, 0]), 10))
     with pytest.raises(ValueError, match="shape"):
         arm.follow(np.zeros((10, 5)))
+
+
+def test_follow_dense_reads_between_commands_without_changing_the_commands():
+    arm, bus = make_arm()
+    arm.safety.cfg.rate_hz = 200.0  # 5 ms per tick: room for many fake reads
+    arm.connect(torque=True)
+    path = _line(np.zeros(6), np.deg2rad([0, 0, 5, 0, 0, 0]), 20)
+    res = arm.follow(path, dense=True)
+    assert np.allclose(res.q_cmd, path) and len(res.t_sent) == len(path)
+    assert len(res.t_dense) == len(res.q_dense) > 2 * len(path)  # more than one read per command
+    assert np.all(np.diff(res.t_dense) > 0)
+    assert np.all(res.t_sent < res.t)  # each command goes out before its first read
+    assert res.t_dense[-1] < res.t_sent[-1] + 2 / arm.safety.cfg.rate_hz  # reads stop with the last tick
+    assert arm.follow(path[-1:]).t_dense is None  # off by default
