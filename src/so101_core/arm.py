@@ -14,6 +14,7 @@ Differences from calling LeRobot's `SOFollower` directly:
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -25,6 +26,17 @@ from so101_core.safety import SafetyConfig, SafetyLayer
 
 class StallError(RuntimeError):
     pass
+
+
+@dataclass
+class FollowResult:
+    """What `SafeArm.follow` did. All arrays have one row per command."""
+
+    t: np.ndarray  # (n,) seconds since the first command
+    q_cmd: np.ndarray  # (n, 6) what was sent, after the safety filter
+    q_meas: np.ndarray  # (n, 6) measured right after each command
+    clipped: int  # commands where the filter clipped a target to the limits
+    step_limited: int  # commands where the filter capped the step (the arm lags the path)
 
 
 class Rate:
@@ -64,6 +76,9 @@ class SafeArm:
         self.confirm_release = confirm_release
         self.torque = False
         self.q_cmd: np.ndarray | None = None  # last commanded position (rad)
+        self.last_filter = (
+            None  # FilterResult of the last command(): which joints were clipped or step-capped
+        )
 
     # -- connection -------------------------------------------------------------------------
     def _build_robot(self):
@@ -148,6 +163,7 @@ class SafeArm:
         res = self.safety.filter(q_target, self.q_cmd)
         self._send(res.q)
         self.q_cmd = res.q
+        self.last_filter = res
         return res.q
 
     def move_to(
@@ -212,3 +228,61 @@ class SafeArm:
                 self.hold()
                 raise TimeoutError("move_to could not finish the ramp in time; holding position")
             rate.sleep()
+
+    def follow(
+        self,
+        q_path: np.ndarray,
+        stall_rad: float = np.deg2rad(5.0),
+        stall_s: float = 0.3,
+        on_tick: Callable[[int, np.ndarray, np.ndarray], None] | None = None,
+    ) -> FollowResult:
+        """Send one command per row of `q_path` at the safety rate, reading the arm after each.
+
+        For trajectories (drawing, replay), where `move_to`'s ramp and settling do not fit. Every command
+        goes through the safety layer; the result counts the ticks where it clipped or capped the path,
+        so a path that the layer had to change is visible. If the measured position lags the command by
+        more than `stall_rad` for longer than `stall_s`, the arm is probably blocked: it holds and raises
+        `StallError`. The default (5 deg, 0.3 s) is tighter than `move_to`'s, because a slow trajectory
+        should not drift far from its command.
+
+        `q_path` must start within one step cap of the current command (`move_to` its first row first);
+        otherwise the first commands would silently change the start of the path.
+        `on_tick(i, q_measured, q_commanded)` is called every cycle, e.g. to log.
+        """
+        if not self.torque:
+            raise RuntimeError("torque is off; connect(torque=True) first")
+        q_path = np.asarray(q_path, dtype=float)
+        if q_path.ndim != 2 or q_path.shape[1] != len(JOINTS):
+            raise ValueError(f"q_path must have shape (n, {len(JOINTS)}), got {q_path.shape}")
+        if np.max(np.abs(q_path[0] - self.q_cmd)) > self.safety.cfg.max_step_rad:
+            raise ValueError(
+                "q_path starts more than one step cap from the current command; move_to its start first"
+            )
+        rate = Rate(self.safety.cfg.rate_hz)
+        t0 = time.perf_counter()
+        t, cmd, meas = [], [], []
+        clipped = step_limited = 0
+        lag_since = None
+        for i, q_target in enumerate(q_path):
+            q_sent = self.command(q_target)
+            clipped += bool(self.last_filter.clipped.any())
+            step_limited += bool(self.last_filter.step_limited.any())
+            q = self.read()
+            now = time.perf_counter()
+            t.append(now - t0)
+            cmd.append(q_sent)
+            meas.append(q)
+            if on_tick:
+                on_tick(i, q, q_sent)
+            if np.max(np.abs(q - q_sent)) > stall_rad:
+                lag_since = lag_since or now
+                if now - lag_since > stall_s:
+                    worst = JOINTS[int(np.argmax(np.abs(q - q_sent)))]  # before hold() resets q_cmd
+                    self.hold()
+                    raise StallError(
+                        f"{worst} is not following the path (tick {i}): blocked? Holding position."
+                    )
+            else:
+                lag_since = None
+            rate.sleep()
+        return FollowResult(np.array(t), np.array(cmd), np.array(meas), clipped, step_limited)

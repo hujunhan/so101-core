@@ -137,7 +137,7 @@ flowchart LR
 | Limit clip with margin | Targets outside the joint range, such as an unconstrained IK solution | `safety.py` |
 | Step cap | Large jumps between commands (the servo would run at full speed) | `safety.py` |
 | Firmware position limits | Anything that gets past the software | Servo registers, written by LeRobot calibration |
-| Following-error watch | Collisions, blocked joints, stalls (no force sensor; the lag *is* the sensor) | `arm.move_to` |
+| Following-error watch | Collisions, blocked joints, stalls (no force sensor; the lag *is* the sensor) | `arm.move_to` (15° for 0.5 s), `arm.follow` (5° for 0.3 s) |
 
 None of these detects a collision *before* it happens. That needs a collision model (M1+).
 
@@ -230,7 +230,7 @@ Importance: **★★★** load-bearing (a bug here can hurt hardware or corrupt 
 
 | File | Lines | Importance | What it does | Uses | Used by |
 |---|---:|:-:|---|---|---|
-| `arm.py` | 214 | ★★★ | `SafeArm`: safe connect, read, `command`, `move_to` (ramp, settle, stall), `hold`, `release` with confirmation, context manager. Also `Rate` (fixed-rate loop) and `StallError` | `config`, `convert`, `model`, `safety`; LeRobot (lazy) | `tools/jointcheck`, `tools/twin` (`Rate`), tests; all later repos |
+| `arm.py` | 214 | ★★★ | `SafeArm`: safe connect, read, `command`, `move_to` (ramp, settle, stall), `follow` (a trajectory at the safety rate with stall watch and a log of commanded vs measured), `hold`, `release` with confirmation, context manager. Also `Rate` (fixed-rate loop) and `StallError` | `config`, `convert`, `model`, `safety`; LeRobot (lazy) | `tools/jointcheck`, `tools/twin` (`Rate`), tests; all later repos |
 | `safety.py` | 61 | ★★★ | `SafetyConfig` (margin, step, rate) and `SafetyLayer.filter`: NaN check, limit clip with inward-only rule, step cap | `model` | `arm`, tests |
 | `convert.py` | 40 | ★★★ | The only unit boundary: `lerobot_to_rad`, `rad_to_lerobot` (arm joints and gripper) | `config`, `model` | `arm`, `tools/check`, `tools/twin`, tests |
 | `config.py` | 88 | ★★ | `DeviceConfig` (ports, calibration IDs, camera paths) and `JointMap` (sign, offset, rest pose, verified date; load/save YAML); `config_dir()` lookup | `model` | `arm`, `convert`, all tools, tests |
@@ -251,7 +251,7 @@ Importance: **★★★** load-bearing (a bug here can hurt hardware or corrupt 
 
 | File | Importance | What it does |
 |---|:-:|---|
-| `tests/test_core.py` | ★★ | 12 hardware-free tests. Model/MJCF agreement; zero pose is upright; conversion round trip; safety clip, step cap, inward-only and NaN rules; `SafeArm` against a fake servo bus: reaching goals within the step cap, stall detection naming the right joint, hold and release on exception, prompt return under gravity sag (regression) |
+| `tests/test_core.py` | ★★ | 17 hardware-free tests. Model/MJCF agreement; zero pose is upright; conversion round trip; safety clip, step cap, inward-only and NaN rules; `SafeArm` against a fake servo bus: reaching goals within the step cap, stall detection naming the right joint, hold and release on exception, prompt return under gravity sag (regression); `follow`: tracking and the clipped / step-capped counts, stall detection, no false stall under sag, refusal of a path that starts far from the command |
 | `config/devices.example.yaml` | ★ | Format of the machine-specific, git-ignored `devices.yaml` |
 | `config/joint_map.yaml` | ★★ | Verified mapping and rest pose for *this* arm; read by everything that talks to it |
 | `config/jointcheck_*.yaml` | ★ | Dated logs of each joint check (evidence) |

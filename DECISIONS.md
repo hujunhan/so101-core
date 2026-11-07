@@ -37,3 +37,14 @@ Key decisions for the SO-101 project series, newest last. Each entry: what was d
 - A rigid ChArUco board (printed, mounted on acrylic or foam board), for M2.
 - A dimmable desk lamp, for M4 illuminance control.
 - A table clamp for the arm base.
+
+## 2026-11-06: `SafeArm.follow` for trajectories, with a tighter stall watch
+- **Decided:** add `follow(q_path)`: one safety-filtered command per row at the safety rate, a read after
+  each, a log of commanded vs measured, counts of the ticks the filter clipped or step-capped, and a stall
+  watch of 5 deg for 0.3 s (`move_to` keeps 15 deg for 0.5 s). The path must start within one step cap of the
+  current command.
+- **Why:** M1's drawing needs a trajectory at a fixed rate; `move_to` ramps to a goal and waits to settle, and
+  `command()` has no stall detection. A slow trajectory should not be allowed to drift 15 deg from its
+  command, and a path the safety layer had to change must be visible instead of silently distorted.
+- **Options:** put the loop in the M1 repo (every later repo that follows a trajectory would repeat the
+  safety logic); reuse `move_to` waypoint by waypoint (it settles at each one, so no continuous motion).

@@ -170,3 +170,64 @@ def test_move_to_returns_promptly_despite_gravity_sag():
     q = arm.move_to(goal, speed_rad_s=np.deg2rad(2000), settle_s=0.02, settle_timeout_s=5.0)
     assert time.perf_counter() - t0 < 1.0
     assert np.rad2deg(goal[2] - q[2]) == pytest.approx(3.0, abs=0.2)  # the residual is reported, not hidden
+
+
+def _line(q_from, q_to, n):
+    return np.linspace(q_from, q_to, n)
+
+
+def test_follow_tracks_a_path_and_reports_what_the_filter_did():
+    arm, bus = make_arm()
+    arm.connect(torque=True)
+    path = _line(
+        np.zeros(6), np.deg2rad([10, -10, 10, 5, 0, 0]), 40
+    )  # 0.25 deg per tick: inside the step cap
+    res = arm.follow(path)
+    assert res.q_cmd.shape == res.q_meas.shape == path.shape and len(res.t) == len(path)
+    assert np.allclose(res.q_cmd, path) and res.clipped == 0 and res.step_limited == 0
+    assert np.allclose(res.q_meas[-1], path[-1], atol=np.deg2rad(0.5))  # the fake servo catches up
+    assert np.all(np.diff(res.t) > 0)
+
+
+def test_follow_counts_clipped_and_step_limited_ticks():
+    arm, bus = make_arm()
+    arm.connect(torque=True)
+    fast = _line(np.zeros(6), np.deg2rad([0, 0, 20, 0, 0, 0]), 5)  # 5 deg per tick, cap is 2
+    assert arm.follow(fast).step_limited > 0
+    arm2, _ = make_arm()
+    arm2.connect(torque=True)
+    out = np.tile(arm2.q_cmd, (4, 1))
+    out[1:, 1] = np.deg2rad(110)  # beyond the shoulder_lift limit (the first row stays at the command)
+    res = arm2.follow(out)
+    assert res.clipped == 3
+    assert np.all(res.q_cmd[:, 1] <= arm2.safety.hi[1] + 1e-9)
+
+
+def test_follow_stops_on_stall():
+    arm, bus = make_arm(blocked=1)
+    arm.connect(torque=True)
+    path = _line(np.zeros(6), np.deg2rad([0, 60, 0, 0, 0, 0]), 200)  # 0.3 deg per tick
+    with pytest.raises(StallError, match="shoulder_lift"):
+        arm.follow(path, stall_s=0.01)
+    assert np.allclose(bus.goal, bus.q)  # holding where it is, not pushing on
+
+
+def test_follow_tolerates_gravity_sag_below_the_stall_threshold():
+    sag = np.zeros(len(JOINTS))
+    sag[2] = np.deg2rad(3.0)
+    arm, bus = make_arm(sag=sag)
+    arm.connect(torque=True)
+    start = arm.q_cmd.copy()  # the fake servo has already sagged a little by the time connect() returns
+    res = arm.follow(_line(start, start + np.deg2rad([0, 0, 20, 0, 0, 0]), 60))
+    residual = np.rad2deg(res.q_cmd[-1, 2] - res.q_meas[-1, 2])
+    # sag (3 deg) plus the fake servo's lag of about one tick (0.33 deg) while the path is still moving
+    assert residual == pytest.approx(3.33, abs=0.15)  # reported, not hidden; no false stall
+
+
+def test_follow_refuses_a_path_that_starts_far_from_the_current_command():
+    arm, _ = make_arm()
+    arm.connect(torque=True)
+    with pytest.raises(ValueError, match="move_to its start"):
+        arm.follow(_line(np.deg2rad([20, 0, 0, 0, 0, 0]), np.deg2rad([30, 0, 0, 0, 0, 0]), 10))
+    with pytest.raises(ValueError, match="shape"):
+        arm.follow(np.zeros((10, 5)))
