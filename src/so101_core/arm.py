@@ -20,7 +20,7 @@ import numpy as np
 
 from so101_core.config import DeviceConfig, JointMap
 from so101_core.convert import lerobot_to_rad, rad_to_lerobot
-from so101_core.model import JOINTS
+from so101_core.model import JOINTS, urdf_limits
 from so101_core.safety import SafetyConfig, SafetyLayer
 
 
@@ -77,8 +77,9 @@ class SafeArm:
         | None = None,  # servo position gain; None keeps LeRobot's (16; the factory value is 32)
     ):
         self.devices = devices
-        self.safety = SafetyLayer(safety)
         self.jm = joint_map or JointMap.load()
+        # limits in model angles that also keep the readings inside the URDF range (see JointMap.model_limits)
+        self.safety = SafetyLayer(safety, limits=self.jm.model_limits(*urdf_limits()))
         self.robot = robot
         self.confirm_release = confirm_release
         self.position_p = position_p

@@ -258,3 +258,15 @@ def test_position_p_reaches_the_lerobot_config(monkeypatch):
     assert seen["cfg"].position_p_coefficient == 32
     SafeArm(devices, joint_map=JointMap())._build_robot()
     assert seen["cfg"].position_p_coefficient == 16  # LeRobot's default is kept
+
+
+def test_offset_limits_keep_readings_in_range():
+    from so101_core.config import JointMap
+
+    jm = JointMap()
+    jm.offset[2] = np.deg2rad(-7.3)
+    lo, hi = jm.model_limits(LO, HI)
+    assert lo[2] == LO[2] and np.isclose(hi[2], HI[2] - np.deg2rad(7.3))
+    # readings at the new limits stay inside the URDF range
+    assert (hi[2] - jm.offset[2]) <= HI[2] + 1e-12
+    assert np.allclose(np.delete(lo, 2), np.delete(LO, 2)) and np.allclose(np.delete(hi, 2), np.delete(HI, 2))

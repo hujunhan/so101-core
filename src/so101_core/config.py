@@ -73,6 +73,22 @@ class JointMap:
         jm.verified = d.get("verified")
         return jm
 
+    def model_limits(self, lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Arm joint limits in model angles such that the readings stay inside [lo, hi] as well.
+
+        The URDF limits fit LeRobot's readings (0 = the middle of each joint's calibrated range). With a zero
+        offset, the model angle q = sign * reading + offset can be inside them while the reading is not (the
+        joint's hard stop): an elbow offset of -7.3 deg would let the reading reach 99 deg against a 96.6 deg
+        range. So the limits are the intersection of both. The gripper keeps its own linear map.
+        """
+        lo, hi = np.array(lo, float), np.array(hi, float)
+        a, b = self.sign * lo + self.offset, self.sign * hi + self.offset
+        out_lo, out_hi = lo.copy(), hi.copy()
+        arm = slice(0, len(JOINTS) - 1)
+        out_lo[arm] = np.maximum(lo[arm], np.minimum(a, b)[arm])
+        out_hi[arm] = np.minimum(hi[arm], np.maximum(a, b)[arm])
+        return out_lo, out_hi
+
     def save(self, path: Path, verified: bool = False) -> None:
         if verified:
             self.verified = date.today().isoformat()
