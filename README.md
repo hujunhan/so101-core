@@ -96,6 +96,11 @@ Bugs found and fixed, and what the first runs on the real arm showed.
   (the middle of the range recorded at calibration) and the model's "new calibration" zero (the middle of
   the joint range) agree. For example, shoulder_pan has range 734–3228, so its middle is 1981, and a reading
   of 1957 ticks is −2.1°, matching the model.
+- **Update (2026-11-07): one zero offset.** so101-calib's hand-eye calibration (M2, S4) measured the elbow's
+  zero 7.28° off (LeRobot's middle pose is set by eye). `joint_map.yaml` now has `elbow_flex: offset_rad:
+  -0.127077`, and the rest pose is shifted with it. `SafeArm` limits now keep both the model angle and the
+  LeRobot reading inside the URDF range (`JointMap.model_limits`), so the elbow goes to 84.5° instead of
+  91.8° (5° margin). LeRobot's own calibration and recordings are unchanged.
 - **Residual at the zero pose** (measured − commanded):
   - shoulder_pan 0.35°, shoulder_lift 0.31°, wrist_flex 0.79°, wrist_roll −0.26°;
   - **elbow_flex 2.64°**.
